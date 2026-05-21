@@ -4,23 +4,6 @@ import fs from "fs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ASSETS = path.join(__dirname, "..", "assets");
-function toJID(raw) {
-  // Strip spaces, dashes, +
-  let n = raw.replace(/[\s\-+]/g, "");
-  // 0XXXXXXXXX → 212XXXXXXXXX
-  if (n.startsWith("0")) n = "212" + n.slice(1);
-  // XXXXXXXXX (9 digits, no country code) → 212XXXXXXXXX
-  if (n.length === 9) n = "212" + n;
-  return n + "@s.whatsapp.net";
-}
-
-if (!process.env.ADMIN_NUMBER) {
-  console.warn("⚠️  ADMIN_NUMBER is not set — admin notifications will fail.");
-}
-
-const ADMIN_JID = process.env.ADMIN_NUMBER
-  ? toJID(process.env.ADMIN_NUMBER)
-  : "";
 
 const businessInfo = fs
   .readFileSync(path.join(ASSETS, "business-details.txt"), "utf-8")
@@ -56,11 +39,6 @@ function getMessageText(msg) {
   ).trim();
 }
 
-function getSenderPhone(msg) {
-  const jid = msg.key.participant || msg.key.remoteJid;
-  return jid.split("@")[0];
-}
-
 async function sendText(sock, jid, text) {
   await sock.sendMessage(jid, { text });
 }
@@ -77,18 +55,9 @@ async function sendAudio(sock, jid, filePath) {
   });
 }
 
-async function notifyAdmin(sock, text, phone) {
-  if (!ADMIN_JID) return;
-  await sock.sendMessage(ADMIN_JID, {
-    text,
-    mentions: [`${phone}@s.whatsapp.net`],
-  });
-}
-
 export async function handleMessage(sock, msg) {
   const chatJid = msg.key.remoteJid;
   const body = getMessageText(msg);
-  const phone = getSenderPhone(msg);
 
   if (handedOffUsers.has(chatJid)) return;
 
@@ -102,11 +71,6 @@ export async function handleMessage(sock, msg) {
 
   if (VIP_RE.test(body)) {
     handedOffUsers.add(chatJid);
-    await notifyAdmin(
-      sock,
-      `👑 *VIP/VAP*\n👤 @${phone}\nيسأل عن VIP — تواصل معه مباشرة`,
-      phone
-    );
     return;
   }
 
@@ -151,18 +115,7 @@ export async function handleMessage(sock, msg) {
         return;
       }
       handedOffUsers.add(chatJid);
-      await notifyAdmin(
-        sock,
-        `🛒 *طلب جديد!*\n👤 @${phone}\n📦 الكمية المطلوبة: *${qty} حجرة*\n\nاضغط على الاسم للدخول للمحادثة ⬆️`,
-        phone
-      );
       return;
     }
   }
-
-  await notifyAdmin(
-    sock,
-    `💬 *رسالة خارج النطاق*\n👤 @${phone}\n💬 قال: "${body}"\n\nاضغط على الاسم للدخول للمحادثة ⬆️`,
-    phone
-  );
 }
