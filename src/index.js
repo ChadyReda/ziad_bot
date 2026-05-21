@@ -19,47 +19,114 @@ const AUTH_PATH =
   process.env.AUTH_PATH || path.join(__dirname, "..", "auth_state");
 const ASSETS = path.join(__dirname, "..", "assets");
 const PORT = process.env.PORT || 3000;
+const RESET_TOKEN = process.env.RESET_TOKEN || "";
 
 const logger = pino({ level: "silent" });
 
 // Shared state for the QR web page
 let currentQR = null;
 let botStatus = "starting"; // "starting" | "qr" | "connected"
+let activeSock = null;
+
+function clearAuthState() {
+  if (fs.existsSync(AUTH_PATH)) {
+    fs.rmSync(AUTH_PATH, { recursive: true, force: true });
+  }
+  fs.mkdirSync(AUTH_PATH, { recursive: true });
+}
+
+const HTML = {
+  wrap: (title, body) => `<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>${title}</title>
+<style>
+  *{box-sizing:border-box;}
+  body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;
+    min-height:100vh;margin:0;background:#f5f5f5;}
+  .box{text-align:center;padding:2.5rem 3rem;border-radius:1rem;background:#fff;
+    box-shadow:0 4px 24px rgba(0,0,0,.08);max-width:420px;width:100%;}
+  h1,h2{margin:.5rem 0;} p{color:#666;margin:.4rem 0;}
+  .btn{display:inline-block;margin-top:1.5rem;padding:.65rem 1.4rem;border-radius:.5rem;
+    background:#dc2626;color:#fff;text-decoration:none;font-size:.9rem;cursor:pointer;
+    border:none;}
+  .btn:hover{background:#b91c1c;}
+  small{color:#aaa;}
+</style></head>
+<body><div class="box">${body}</div></body></html>`,
+
+  connected: (resetUrl) => HTML.wrap("Ziad Bot", `
+    <h1>✅ Bot Connected</h1>
+    <p>WhatsApp is linked and the bot is running.</p>
+    ${resetUrl ? `<br><a class="btn" href="${resetUrl}" onclick="return confirm('This will disconnect the current number and show a new QR. Continue?')">🔄 Switch number / Re-scan</a>` : ""}
+  `),
+
+  waiting: () => HTML.wrap("Ziad Bot — Starting", `
+    <meta http-equiv="refresh" content="3">
+    <h2>⏳ Generating QR code…</h2>
+    <p>This page refreshes automatically.</p>
+  `),
+
+  qr: (qrDataURL, resetUrl) => HTML.wrap("Ziad Bot — Scan QR", `
+    <meta http-equiv="refresh" content="30">
+    <h2>📱 Scan with WhatsApp</h2>
+    <p>Open WhatsApp → Linked Devices → Link a Device</p>
+    <img src="${qrDataURL}" width="280" height="280" alt="QR Code"
+      style="display:block;margin:1.2rem auto;border:6px solid #f0f0f0;border-radius:.5rem;"/>
+    <small>Auto-refreshes every 30s &nbsp;·&nbsp; QR expires after ~60s</small>
+    ${resetUrl ? `<br><a class="btn" href="${resetUrl}" style="margin-top:1rem;background:#555;"
+      onclick="return confirm('Generate a fresh QR for a different number?')">🔄 Use different number</a>` : ""}
+  `),
+
+  reset: () => HTML.wrap("Ziad Bot — Reset", `
+    <meta http-equiv="refresh" content="3;url=/">
+    <h2>🔄 Session cleared</h2>
+    <p>Redirecting to QR page…</p>
+  `),
+
+  forbidden: () => HTML.wrap("Ziad Bot — Forbidden", `<h2>🚫 Invalid reset token</h2>`),
+};
 
 // ── QR web server ─────────────────────────────────────────────────────────────
 const server = http.createServer(async (req, res) => {
-  if (req.url !== "/" && req.url !== "/status") {
+  const url = new URL(req.url, `http://localhost`);
+
+  // /reset?token=xxxx
+  if (url.pathname === "/reset") {
+    if (!RESET_TOKEN || url.searchParams.get("token") !== RESET_TOKEN) {
+      res.writeHead(403, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(HTML.forbidden());
+      return;
+    }
+
+    console.log("Reset requested — clearing auth state and reconnecting…");
+    currentQR = null;
+    botStatus = "starting";
+
+    try { activeSock?.end(); } catch {}
+    clearAuthState();
+    setTimeout(startBot, 500);
+
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(HTML.reset());
+    return;
+  }
+
+  if (url.pathname !== "/") {
     res.writeHead(404);
     res.end("Not found");
     return;
   }
 
-  if (req.url === "/status") {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ status: botStatus }));
-    return;
-  }
+  const resetUrl = RESET_TOKEN ? `/reset?token=${RESET_TOKEN}` : null;
 
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
 
   if (botStatus === "connected") {
-    res.end(`<!DOCTYPE html><html><head><meta charset="utf-8">
-<title>Ziad Bot</title>
-<style>body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#f0fdf4;}
-.box{text-align:center;padding:2rem;border-radius:1rem;background:#fff;box-shadow:0 4px 20px rgba(0,0,0,.1);}
-h1{color:#16a34a;} p{color:#555;}</style></head>
-<body><div class="box"><h1>✅ Bot Connected</h1><p>WhatsApp is linked and the bot is running.</p></div></body></html>`);
+    res.end(HTML.connected(resetUrl));
     return;
   }
 
   if (!currentQR) {
-    res.end(`<!DOCTYPE html><html><head><meta charset="utf-8">
-<title>Ziad Bot — Waiting</title>
-<meta http-equiv="refresh" content="3">
-<style>body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#fafafa;}
-.box{text-align:center;padding:2rem;border-radius:1rem;background:#fff;box-shadow:0 4px 20px rgba(0,0,0,.1);}
-h2{color:#555;}</style></head>
-<body><div class="box"><h2>⏳ Generating QR code…</h2><p>This page refreshes automatically.</p></div></body></html>`);
+    res.end(HTML.waiting());
     return;
   }
 
@@ -67,23 +134,11 @@ h2{color:#555;}</style></head>
   try {
     qrDataURL = await QRCode.toDataURL(currentQR, { width: 300, margin: 2 });
   } catch {
-    res.end("Error generating QR code. Try refreshing.");
+    res.end("Error generating QR. Try refreshing.");
     return;
   }
 
-  res.end(`<!DOCTYPE html><html><head><meta charset="utf-8">
-<title>Ziad Bot — Scan QR</title>
-<meta http-equiv="refresh" content="30">
-<style>body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#fafafa;}
-.box{text-align:center;padding:2rem;border-radius:1rem;background:#fff;box-shadow:0 4px 20px rgba(0,0,0,.1);}
-h2{color:#333;margin-bottom:.5rem;} p{color:#777;margin-top:0;}
-img{display:block;margin:1.5rem auto;border:6px solid #f0f0f0;border-radius:.5rem;}</style></head>
-<body><div class="box">
-  <h2>📱 Scan with WhatsApp</h2>
-  <p>Open WhatsApp → Linked Devices → Link a Device</p>
-  <img src="${qrDataURL}" width="300" height="300" alt="QR Code"/>
-  <p style="font-size:.85rem;color:#aaa;">Page auto-refreshes every 30s. QR expires after ~60s.</p>
-</div></body></html>`);
+  res.end(HTML.qr(qrDataURL, resetUrl));
 });
 
 server.listen(PORT, () => {
@@ -106,7 +161,7 @@ async function startBot() {
     console.warn("Could not fetch latest WA version, using Baileys default");
   }
 
-  const sock = makeWASocket({
+  const sock = (activeSock = makeWASocket({
     version,
     auth: {
       creds: state.creds,
@@ -117,7 +172,7 @@ async function startBot() {
     generateHighQualityLinkPreview: false,
     syncFullHistory: false,
     markOnlineOnConnect: false,
-  });
+  }));
 
   sock.ev.on("creds.update", saveCreds);
 
