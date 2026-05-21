@@ -4,12 +4,23 @@ import fs from "fs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ASSETS = path.join(__dirname, "..", "assets");
-const ADMIN_JID =
-  process.env.ADMIN_NUMBER
-    ? process.env.ADMIN_NUMBER.includes("@")
-      ? process.env.ADMIN_NUMBER
-      : `${process.env.ADMIN_NUMBER}@s.whatsapp.net`
-    : "21687499959@s.whatsapp.net";
+function toJID(raw) {
+  // Strip spaces, dashes, +
+  let n = raw.replace(/[\s\-+]/g, "");
+  // 0XXXXXXXXX → 212XXXXXXXXX
+  if (n.startsWith("0")) n = "212" + n.slice(1);
+  // XXXXXXXXX (9 digits, no country code) → 212XXXXXXXXX
+  if (n.length === 9) n = "212" + n;
+  return n + "@s.whatsapp.net";
+}
+
+if (!process.env.ADMIN_NUMBER) {
+  console.warn("⚠️  ADMIN_NUMBER is not set — admin notifications will fail.");
+}
+
+const ADMIN_JID = process.env.ADMIN_NUMBER
+  ? toJID(process.env.ADMIN_NUMBER)
+  : "";
 
 const businessInfo = fs
   .readFileSync(path.join(ASSETS, "business-details.txt"), "utf-8")
@@ -67,6 +78,7 @@ async function sendAudio(sock, jid, filePath) {
 }
 
 async function notifyAdmin(sock, text, phone) {
+  if (!ADMIN_JID) return;
   await sock.sendMessage(ADMIN_JID, {
     text,
     mentions: [`${phone}@s.whatsapp.net`],
