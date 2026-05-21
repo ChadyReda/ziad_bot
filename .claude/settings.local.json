@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem \"C:\\\\Users\\\\Reda\\\\Desktop\\\\Ziad Bot\" -File)",
+      "Bash(Select-Object Name)",
+      "PowerShell(Get-ChildItem \"C:\\\\Users\\\\Reda\\\\Desktop\\\\Ziad Bot\" -File | Where-Object { $_.Extension -in '.js','.json','.env','.txt','.md' } | Select-Object Name)",
+      "Bash(rm -rf node_modules package-lock.json)",
+      "Bash(npm install *)",
+      "Bash(node --input-type=module --eval \"import pino from 'pino'; const l = pino\\({ level: 'silent' }\\); console.log\\('pino OK'\\)\")",
+      "Bash(node --input-type=module --eval \"import QRCode from 'qrcode'; const url = await QRCode.toDataURL\\('test', { width: 300 }\\); console.log\\('qrcode OK, dataURL starts with:', url.slice\\(0, 30\\)\\)\")"
+    ]
+  }
+}
